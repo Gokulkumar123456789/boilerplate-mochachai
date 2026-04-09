@@ -229,6 +229,8 @@
       animationFrameId = requestAnimationFrame(analyzeAudio);
     }
 
+    let lastCharTime = 0;
+
     // --- Process a detected frequency ---
     function processDetectedFrequency(freq) {
       const tolerance = codecConfig.freqStep / 3;
@@ -238,6 +240,7 @@
         if (!preambleDetected) {
           preambleDetected = true;
           decodedChars = [];
+          lastCharTime = 0;
           log('Preamble detected — decoding token...');
         }
         return;
@@ -246,24 +249,26 @@
       if (!preambleDetected) return;
 
       // Try to decode character
+      const now = performance.now();
+      // Time-based debounce: each tone lasts ~100ms, require minimum gap
+      const minCharIntervalMs = codecConfig.toneDuration * 0.6; // 60ms
+      if (now - lastCharTime < minCharIntervalMs) return;
+
       for (let i = 0; i < codecConfig.charCount; i++) {
         const targetFreq = codecConfig.baseFrequency + (i * codecConfig.freqStep);
         if (Math.abs(freq - targetFreq) <= tolerance) {
           const char = codecConfig.charset[i];
+          decodedChars.push(char);
+          lastCharTime = now;
+          decodedToken.textContent = decodedChars.join('').padEnd(6, '-');
 
-          // Avoid duplicates from sustained tones (simple debounce)
-          if (decodedChars.length === 0 || decodedChars[decodedChars.length - 1] !== char) {
-            decodedChars.push(char);
-            decodedToken.textContent = decodedChars.join('').padEnd(6, '-');
-
-            // When we have a full token, verify it
-            if (decodedChars.length >= 6) {
-              const token = decodedChars.join('');
-              log('Token decoded: ' + token, 'success');
-              verifyToken(token);
-              preambleDetected = false;
-              decodedChars = [];
-            }
+          // When we have a full token, verify it
+          if (decodedChars.length >= 6) {
+            const token = decodedChars.join('');
+            log('Token decoded: ' + token, 'success');
+            verifyToken(token);
+            preambleDetected = false;
+            decodedChars = [];
           }
           break;
         }

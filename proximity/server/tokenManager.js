@@ -127,8 +127,13 @@ class TokenManager {
     let distance = null;
     if (mobileTimestamp) {
       // Speed of sound = 343 m/s
-      // Time from emission to mobile reception (one-way)
-      const propagationMs = mobileTimestamp - session.tokenCreatedAt;
+      // Estimate acoustic propagation time:
+      //   totalElapsed = now - tokenCreatedAt (includes acoustic + network)
+      //   networkDelay = now - mobileTimestamp (server receipt - mobile decode)
+      //   acousticPropagation ≈ totalElapsed - networkDelay
+      const totalElapsed = now - session.tokenCreatedAt;
+      const networkDelay = now - mobileTimestamp;
+      const propagationMs = Math.max(0, totalElapsed - networkDelay);
       if (propagationMs > 0) {
         distance = (propagationMs / 1000) * 343;
         if (distance > this.maxDistanceMeters) {
@@ -217,10 +222,17 @@ class TokenManager {
    */
   _generateToken() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const charCount = chars.length; // 36
+    // Use rejection sampling to avoid modulo bias
+    const maxValid = 256 - (256 % charCount); // 252 for 36 chars
     let token = '';
-    const bytes = crypto.randomBytes(this.tokenLength);
-    for (let i = 0; i < this.tokenLength; i++) {
-      token += chars[bytes[i] % chars.length];
+    while (token.length < this.tokenLength) {
+      const bytes = crypto.randomBytes(this.tokenLength * 2);
+      for (let i = 0; i < bytes.length && token.length < this.tokenLength; i++) {
+        if (bytes[i] < maxValid) {
+          token += chars[bytes[i] % charCount];
+        }
+      }
     }
     return token;
   }

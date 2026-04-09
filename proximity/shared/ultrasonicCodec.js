@@ -20,7 +20,7 @@ const CHAR_COUNT = CHARSET.length; // 36
 const FREQ_STEP = Math.floor((MAX_FREQUENCY - BASE_FREQUENCY) / CHAR_COUNT); // ~111 Hz
 const TONE_DURATION = 100; // ms per character tone
 const GAP_DURATION = 30;   // ms silence between tones
-const PREAMBLE_FREQ = 17500; // Hz - sync preamble tone (below main band)
+const PREAMBLE_FREQ = 17500; // Hz - sync preamble tone (below main data band, may be faintly audible to some)
 const PREAMBLE_DURATION = 150; // ms
 
 /**

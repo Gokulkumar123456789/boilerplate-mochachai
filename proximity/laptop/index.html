@@ -267,9 +267,6 @@
           oscillator.stop(startTime + step.duration / 1000);
 
           // Draw on visualizer
-          const totalDuration = sequence.reduce((sum, s) => sum + s.duration, 0);
-          const x = (startTime - audioContext.currentTime + (sequence.slice(0, index).reduce((s, st) => s + st.duration, 0)) / totalDuration) * canvas.width;
-          const barWidth = (step.duration / totalDuration) * canvas.width;
           const freqNorm = (step.frequency - 17000) / 5500;
           const barHeight = freqNorm * canvas.height * 0.8;
 
