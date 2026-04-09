@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proximity Proctoring - Laptop</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 20px; }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 30px; color: #e94560; }
+    .card { background: #16213e; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .card h2 { color: #e94560; margin-bottom: 16px; font-size: 1.2em; }
+    .status { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .status-dot { width: 12px; height: 12px; border-radius: 50%; }
+    .status-dot.active { background: #4ecca3; animation: pulse 2s infinite; }
+    .status-dot.inactive { background: #e94560; }
+    .status-dot.warning { background: #f5a623; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    button { background: #e94560; color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-size: 16px; transition: background 0.3s; }
+    button:hover { background: #c73e54; }
+    button:disabled { background: #555; cursor: not-allowed; }
+    .token-display { font-family: 'Courier New', monospace; font-size: 2em; text-align: center; padding: 20px; background: #0f3460; border-radius: 8px; letter-spacing: 8px; margin: 16px 0; }
+    .log { background: #0a0a1a; border-radius: 8px; padding: 16px; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 13px; line-height: 1.6; }
+    .log-entry { border-bottom: 1px solid #1a1a3e; padding: 4px 0; }
+    .log-entry.success { color: #4ecca3; }
+    .log-entry.error { color: #e94560; }
+    .log-entry.info { color: #7ec8e3; }
+    .controls { display: flex; gap: 12px; flex-wrap: wrap; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 16px; }
+    .stat-box { background: #0f3460; border-radius: 8px; padding: 16px; text-align: center; }
+    .stat-box .value { font-size: 1.8em; font-weight: bold; color: #4ecca3; }
+    .stat-box .label { font-size: 0.85em; color: #888; margin-top: 4px; }
+    .visualizer { width: 100%; height: 80px; background: #0a0a1a; border-radius: 8px; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔊 Proximity Proctoring — Laptop</h1>
+
+    <div class="card">
+      <h2>Session Control</h2>
+      <div class="controls">
+        <button id="btnStart" onclick="startSession()">Start Session</button>
+        <button id="btnStop" onclick="stopSession()" disabled>Stop Session</button>
+      </div>
+      <div class="status" id="sessionStatus" style="margin-top: 16px;">
+        <div class="status-dot inactive" id="statusDot"></div>
+        <span id="statusText">No active session</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Current Token</h2>
+      <div class="token-display" id="tokenDisplay">------</div>
+      <p style="text-align:center; color: #888; font-size: 0.9em;">
+        This token is being emitted as ultrasonic audio (18–22 kHz)
+      </p>
+      <canvas class="visualizer" id="waveformCanvas"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Proximity Status</h2>
+      <div class="stats">
+        <div class="stat-box">
+          <div class="value" id="verificationCount">0</div>
+          <div class="label">Verifications</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="successRate">0%</div>
+          <div class="label">Success Rate</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="proximityStatus">—</div>
+          <div class="label">Proximity</div>
+        </div>
+        <div class="stat-box">
+          <div class="value" id="lastDistance">—</div>
+          <div class="label">Last Distance</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Activity Log</h2>
+      <div class="log" id="activityLog">
+        <div class="log-entry info">System ready. Click "Start Session" to begin.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- State ---
+    let sessionId = null;
+    let audioContext = null;
+    let isEmitting = false;
+    let tokenPollInterval = null;
+    let statusPollInterval = null;
+    let currentToken = null;
+    let codecConfig = null;
+
+    // --- DOM refs ---
+    const btnStart = document.getElementById('btnStart');
+    const btnStop = document.getElementById('btnStop');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const tokenDisplay = document.getElementById('tokenDisplay');
+    const activityLog = document.getElementById('activityLog');
+    const verificationCount = document.getElementById('verificationCount');
+    const successRate = document.getElementById('successRate');
+    const proximityStatus = document.getElementById('proximityStatus');
+    const lastDistance = document.getElementById('lastDistance');
+    const waveformCanvas = document.getElementById('waveformCanvas');
+
+    // --- Logging ---
+    function log(message, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry ' + type;
+      entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
+      activityLog.prepend(entry);
+      // Keep log size manageable
+      while (activityLog.children.length > 100) {
+        activityLog.removeChild(activityLog.lastChild);
+      }
+    }
+
+    // --- Fetch codec config ---
+    async function fetchConfig() {
+      const res = await fetch('/proximity/config');
+      const data = await res.json();
+      codecConfig = data.ultrasonic;
+      log('Codec config loaded: ' + codecConfig.charCount + ' chars, ' +
+          codecConfig.baseFrequency + '-' + codecConfig.maxFrequency + ' Hz');
+    }
+
+    // --- Start session ---
+    async function startSession() {
+      try {
+        await fetchConfig();
+
+        // Create audio context (requires user gesture)
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+
+        const res = await fetch('/proximity/session', { method: 'POST' });
+        const data = await res.json();
+        sessionId = data.sessionId;
+        currentToken = data.token;
+
+        tokenDisplay.textContent = currentToken;
+        setStatus('active', 'Session active: ' + sessionId.substring(0, 8) + '...');
+        btnStart.disabled = true;
+        btnStop.disabled = false;
+
+        log('Session created: ' + sessionId.substring(0, 8) + '...', 'success');
+        log('Initial token: ' + currentToken);
+
+        // Start emitting ultrasonic token
+        emitToken(data.ultrasonicSequence);
+
+        // Poll for new tokens every 4 seconds
+        tokenPollInterval = setInterval(pollToken, 4000);
+
+        // Poll for verification status every 2 seconds
+        statusPollInterval = setInterval(pollStatus, 2000);
+
+      } catch (err) {
+        log('Failed to start session: ' + err.message, 'error');
+      }
+    }
+
+    // --- Stop session ---
+    async function stopSession() {
+      isEmitting = false;
+      clearInterval(tokenPollInterval);
+      clearInterval(statusPollInterval);
+
+      if (sessionId) {
+        try {
+          await fetch('/proximity/session/' + sessionId + '/end', { method: 'POST' });
+          log('Session ended', 'info');
+        } catch (err) {
+          log('Error ending session: ' + err.message, 'error');
+        }
+      }
+
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+
+      sessionId = null;
+      currentToken = null;
+      tokenDisplay.textContent = '------';
+      setStatus('inactive', 'No active session');
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+    }
+
+    // --- Poll for new token ---
+    async function pollToken() {
+      if (!sessionId) return;
+      try {
+        const res = await fetch('/proximity/token/' + sessionId);
+        const data = await res.json();
+        if (data.token !== currentToken) {
+          currentToken = data.token;
+          tokenDisplay.textContent = currentToken;
+          log('Token rotated: ' + currentToken);
+          emitToken(data.ultrasonicSequence);
+        }
+      } catch (err) {
+        log('Token poll error: ' + err.message, 'error');
+      }
+    }
+
+    // --- Poll for verification status ---
+    async function pollStatus() {
+      if (!sessionId) return;
+      try {
+        const res = await fetch('/proximity/status/' + sessionId);
+        const data = await res.json();
+
+        verificationCount.textContent = data.totalVerifications;
+        successRate.textContent = Math.round(data.recentSuccessRate * 100) + '%';
+        proximityStatus.textContent = data.proximityConfirmed ? '✅' : '❌';
+        proximityStatus.style.color = data.proximityConfirmed ? '#4ecca3' : '#e94560';
+
+        if (data.lastVerification && data.lastVerification.distance != null) {
+          lastDistance.textContent = data.lastVerification.distance.toFixed(1) + 'm';
+        }
+      } catch (err) {
+        // Silent fail for status polls
+      }
+    }
+
+    // --- Emit ultrasonic token via Web Audio API ---
+    function emitToken(sequence) {
+      if (!audioContext || !sequence) return;
+
+      isEmitting = true;
+      let startTime = audioContext.currentTime;
+
+      const canvas = waveformCanvas;
+      const ctx = canvas.getContext('2d');
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      sequence.forEach((step, index) => {
+        if (step.frequency > 0) {
+          const oscillator = audioContext.createOscillator();
+          const gainNode = audioContext.createGain();
+
+          oscillator.type = 'sine';
+          oscillator.frequency.value = step.frequency;
+
+          // Smooth envelope to avoid clicks
+          gainNode.gain.setValueAtTime(0, startTime);
+          gainNode.gain.linearRampToValueAtTime(0.3, startTime + 0.005);
+          gainNode.gain.setValueAtTime(0.3, startTime + (step.duration / 1000) - 0.005);
+          gainNode.gain.linearRampToValueAtTime(0, startTime + (step.duration / 1000));
+
+          oscillator.connect(gainNode);
+          gainNode.connect(audioContext.destination);
+
+          oscillator.start(startTime);
+          oscillator.stop(startTime + step.duration / 1000);
+
+          // Draw on visualizer
+          const totalDuration = sequence.reduce((sum, s) => sum + s.duration, 0);
+          const x = (startTime - audioContext.currentTime + (sequence.slice(0, index).reduce((s, st) => s + st.duration, 0)) / totalDuration) * canvas.width;
+          const barWidth = (step.duration / totalDuration) * canvas.width;
+          const freqNorm = (step.frequency - 17000) / 5500;
+          const barHeight = freqNorm * canvas.height * 0.8;
+
+          ctx.fillStyle = step.type === 'preamble' ? '#f5a623' : '#4ecca3';
+          ctx.fillRect(index * (canvas.width / sequence.length), canvas.height - barHeight,
+                       canvas.width / sequence.length - 2, barHeight);
+        }
+
+        startTime += step.duration / 1000;
+      });
+
+      // Schedule re-emission after the sequence completes
+      const totalDurationSec = sequence.reduce((sum, s) => sum + s.duration, 0) / 1000;
+      if (isEmitting) {
+        setTimeout(() => {
+          if (isEmitting && sessionId) {
+            emitToken(sequence);
+          }
+        }, (totalDurationSec + 0.5) * 1000); // 500ms pause between repetitions
+      }
+    }
+
+    // --- Status helper ---
+    function setStatus(state, text) {
+      statusDot.className = 'status-dot ' + state;
+      statusText.textContent = text;
+    }
+  </script>
+</body>
+</html>

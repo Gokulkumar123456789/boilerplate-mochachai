@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Proximity Proctoring - Mobile</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 16px; }
+    .container { max-width: 500px; margin: 0 auto; }
+    h1 { text-align: center; margin-bottom: 20px; color: #4ecca3; font-size: 1.4em; }
+    .card { background: #16213e; border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .card h2 { color: #4ecca3; margin-bottom: 12px; font-size: 1.1em; }
+    input { width: 100%; padding: 12px; border: 2px solid #0f3460; border-radius: 8px; background: #0a0a1a; color: #eee; font-size: 16px; margin-bottom: 12px; }
+    input:focus { border-color: #4ecca3; outline: none; }
+    button { width: 100%; background: #4ecca3; color: #1a1a2e; border: none; padding: 14px; border-radius: 8px; cursor: pointer; font-size: 16px; font-weight: bold; transition: background 0.3s; }
+    button:hover { background: #3db890; }
+    button:disabled { background: #555; color: #888; cursor: not-allowed; }
+    button.danger { background: #e94560; color: white; }
+    .status { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+    .status-dot { width: 14px; height: 14px; border-radius: 50%; }
+    .status-dot.listening { background: #4ecca3; animation: pulse 1.5s infinite; }
+    .status-dot.idle { background: #555; }
+    .status-dot.error { background: #e94560; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .decoded-token { font-family: 'Courier New', monospace; font-size: 1.8em; text-align: center; padding: 16px; background: #0f3460; border-radius: 8px; letter-spacing: 6px; margin: 12px 0; }
+    .verification-result { text-align: center; padding: 12px; border-radius: 8px; margin: 12px 0; font-weight: bold; }
+    .verification-result.success { background: rgba(78, 204, 163, 0.2); color: #4ecca3; }
+    .verification-result.failure { background: rgba(233, 69, 96, 0.2); color: #e94560; }
+    .log { background: #0a0a1a; border-radius: 8px; padding: 12px; max-height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px; line-height: 1.5; }
+    .log-entry.success { color: #4ecca3; }
+    .log-entry.error { color: #e94560; }
+    .log-entry.info { color: #7ec8e3; }
+    .freq-display { display: flex; justify-content: space-around; padding: 8px; background: #0a0a1a; border-radius: 8px; margin: 8px 0; }
+    .freq-bar { width: 8px; background: #4ecca3; border-radius: 4px; min-height: 4px; transition: height 0.1s; }
+    canvas { width: 100%; height: 60px; background: #0a0a1a; border-radius: 8px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📱 Proximity Proctoring — Mobile</h1>
+
+    <div class="card">
+      <h2>Join Session</h2>
+      <input type="text" id="sessionInput" placeholder="Enter Session ID" />
+      <button id="btnJoin" onclick="joinSession()">Start Listening</button>
+      <button id="btnLeave" onclick="leaveSession()" class="danger" style="margin-top: 8px; display: none;">Stop Listening</button>
+      <div class="status">
+        <div class="status-dot idle" id="statusDot"></div>
+        <span id="statusText">Not connected</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Decoded Token</h2>
+      <div class="decoded-token" id="decodedToken">------</div>
+      <div id="verificationResult" class="verification-result" style="display: none;"></div>
+      <canvas id="spectrumCanvas"></canvas>
+    </div>
+
+    <div class="card">
+      <h2>Activity Log</h2>
+      <div class="log" id="activityLog">
+        <div class="log-entry info">Enter a session ID and tap "Start Listening".</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- State ---
+    let sessionId = null;
+    let audioContext = null;
+    let analyserNode = null;
+    let micStream = null;
+    let isListening = false;
+    let animationFrameId = null;
+    let codecConfig = null;
+    let decodedChars = [];
+    let preambleDetected = false;
+    let verifyInterval = null;
+
+    // --- DOM refs ---
+    const sessionInput = document.getElementById('sessionInput');
+    const btnJoin = document.getElementById('btnJoin');
+    const btnLeave = document.getElementById('btnLeave');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const decodedToken = document.getElementById('decodedToken');
+    const verificationResult = document.getElementById('verificationResult');
+    const activityLog = document.getElementById('activityLog');
+    const spectrumCanvas = document.getElementById('spectrumCanvas');
+
+    // --- Logging ---
+    function log(message, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = 'log-entry ' + type;
+      entry.textContent = '[' + new Date().toLocaleTimeString() + '] ' + message;
+      activityLog.prepend(entry);
+      while (activityLog.children.length > 50) {
+        activityLog.removeChild(activityLog.lastChild);
+      }
+    }
+
+    // --- Fetch config ---
+    async function fetchConfig() {
+      const res = await fetch('/proximity/config');
+      const data = await res.json();
+      codecConfig = data.ultrasonic;
+      log('Config loaded: listening for ' + codecConfig.baseFrequency + '-' + codecConfig.maxFrequency + ' Hz');
+    }
+
+    // --- Join session ---
+    async function joinSession() {
+      const sid = sessionInput.value.trim();
+      if (!sid) {
+        log('Please enter a session ID', 'error');
+        return;
+      }
+
+      try {
+        await fetchConfig();
+
+        // Verify session exists
+        const statusRes = await fetch('/proximity/status/' + sid);
+        if (!statusRes.ok) {
+          log('Session not found: ' + sid, 'error');
+          return;
+        }
+
+        sessionId = sid;
+
+        // Request microphone access
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            sampleRate: 44100
+          }
+        });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+        const source = audioContext.createMediaStreamSource(micStream);
+
+        analyserNode = audioContext.createAnalyser();
+        analyserNode.fftSize = 8192; // High resolution for frequency detection
+        analyserNode.smoothingTimeConstant = 0.3;
+
+        source.connect(analyserNode);
+
+        isListening = true;
+        setStatus('listening', 'Listening for ultrasonic tokens...');
+        btnJoin.disabled = true;
+        btnLeave.style.display = 'block';
+        sessionInput.disabled = true;
+
+        log('Microphone active. Listening on session: ' + sessionId.substring(0, 8) + '...', 'success');
+
+        // Start frequency analysis loop
+        analyzeAudio();
+
+      } catch (err) {
+        log('Failed to start: ' + err.message, 'error');
+        setStatus('error', 'Error: ' + err.message);
+      }
+    }
+
+    // --- Leave session ---
+    function leaveSession() {
+      isListening = false;
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+      if (verifyInterval) clearInterval(verifyInterval);
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+
+      sessionId = null;
+      decodedChars = [];
+      preambleDetected = false;
+      decodedToken.textContent = '------';
+      verificationResult.style.display = 'none';
+      setStatus('idle', 'Not connected');
+      btnJoin.disabled = false;
+      btnLeave.style.display = 'none';
+      sessionInput.disabled = false;
+      log('Stopped listening');
+    }
+
+    // --- Frequency analysis loop ---
+    function analyzeAudio() {
+      if (!isListening || !analyserNode) return;
+
+      const bufferLength = analyserNode.frequencyBinCount;
+      const dataArray = new Float32Array(bufferLength);
+      analyserNode.getFloatFrequencyData(dataArray);
+
+      const sampleRate = audioContext.sampleRate;
+      const binSize = sampleRate / analyserNode.fftSize;
+
+      // Find peak frequency in the ultrasonic range
+      const minBin = Math.floor((codecConfig.preambleFreq - 500) / binSize);
+      const maxBin = Math.ceil((codecConfig.maxFrequency + 500) / binSize);
+
+      let peakBin = minBin;
+      let peakValue = -Infinity;
+
+      for (let i = minBin; i <= maxBin && i < bufferLength; i++) {
+        if (dataArray[i] > peakValue) {
+          peakValue = dataArray[i];
+          peakBin = i;
+        }
+      }
+
+      const peakFreq = peakBin * binSize;
+      const detectionThreshold = -50; // dB threshold
+
+      if (peakValue > detectionThreshold) {
+        processDetectedFrequency(peakFreq);
+      }
+
+      // Draw spectrum
+      drawSpectrum(dataArray, binSize, minBin, maxBin);
+
+      animationFrameId = requestAnimationFrame(analyzeAudio);
+    }
+
+    // --- Process a detected frequency ---
+    function processDetectedFrequency(freq) {
+      const tolerance = codecConfig.freqStep / 3;
+
+      // Check for preamble
+      if (Math.abs(freq - codecConfig.preambleFreq) <= tolerance) {
+        if (!preambleDetected) {
+          preambleDetected = true;
+          decodedChars = [];
+          log('Preamble detected — decoding token...');
+        }
+        return;
+      }
+
+      if (!preambleDetected) return;
+
+      // Try to decode character
+      for (let i = 0; i < codecConfig.charCount; i++) {
+        const targetFreq = codecConfig.baseFrequency + (i * codecConfig.freqStep);
+        if (Math.abs(freq - targetFreq) <= tolerance) {
+          const char = codecConfig.charset[i];
+
+          // Avoid duplicates from sustained tones (simple debounce)
+          if (decodedChars.length === 0 || decodedChars[decodedChars.length - 1] !== char) {
+            decodedChars.push(char);
+            decodedToken.textContent = decodedChars.join('').padEnd(6, '-');
+
+            // When we have a full token, verify it
+            if (decodedChars.length >= 6) {
+              const token = decodedChars.join('');
+              log('Token decoded: ' + token, 'success');
+              verifyToken(token);
+              preambleDetected = false;
+              decodedChars = [];
+            }
+          }
+          break;
+        }
+      }
+    }
+
+    // --- Verify decoded token with server ---
+    async function verifyToken(token) {
+      if (!sessionId) return;
+      try {
+        const res = await fetch('/proximity/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sessionId: sessionId,
+            token: token,
+            mobileTimestamp: Date.now()
+          })
+        });
+        const data = await res.json();
+
+        verificationResult.style.display = 'block';
+        if (data.verified) {
+          verificationResult.className = 'verification-result success';
+          verificationResult.textContent = '✅ ' + data.reason;
+          log('Verification SUCCESS: ' + data.reason, 'success');
+        } else {
+          verificationResult.className = 'verification-result failure';
+          verificationResult.textContent = '❌ ' + data.reason;
+          log('Verification FAILED: ' + data.reason, 'error');
+        }
+
+        if (data.distance != null) {
+          log('Estimated distance: ' + data.distance.toFixed(2) + 'm');
+        }
+      } catch (err) {
+        log('Verification error: ' + err.message, 'error');
+      }
+    }
+
+    // --- Draw spectrum visualizer ---
+    function drawSpectrum(dataArray, binSize, minBin, maxBin) {
+      const canvas = spectrumCanvas;
+      const ctx = canvas.getContext('2d');
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const range = maxBin - minBin;
+      const barWidth = canvas.width / range;
+
+      for (let i = 0; i < range && (i + minBin) < dataArray.length; i++) {
+        const value = dataArray[i + minBin];
+        const normalizedValue = Math.max(0, (value + 100) / 100);
+        const barHeight = normalizedValue * canvas.height;
+
+        const freq = (i + minBin) * binSize;
+        let color = '#333';
+        if (freq >= codecConfig.baseFrequency && freq <= codecConfig.maxFrequency) {
+          color = '#4ecca3';
+        } else if (Math.abs(freq - codecConfig.preambleFreq) < 200) {
+          color = '#f5a623';
+        }
+
+        ctx.fillStyle = color;
+        ctx.fillRect(i * barWidth, canvas.height - barHeight, barWidth - 1, barHeight);
+      }
+    }
+
+    // --- Status helper ---
+    function setStatus(state, text) {
+      statusDot.className = 'status-dot ' + state;
+      statusText.textContent = text;
+    }
+  </script>
+</body>
+</html>

@@ -14,6 +14,18 @@ app.get('/', function (req, res) {
 
 app.use(express.static(__dirname + '/public'));
 
+// Proximity detection routes
+const { router: proximityRouter } = require('./proximity/server/routes');
+app.use('/proximity', proximityRouter);
+
+// Serve proximity client pages
+app.get('/proximity-laptop', function (req, res) {
+  res.sendFile(__dirname + '/proximity/laptop/index.html');
+});
+app.get('/proximity-mobile', function (req, res) {
+  res.sendFile(__dirname + '/proximity/mobile/index.html');
+});
+
 app.get('/hello', function (req, res) {
   const name = req.query.name || 'Guest';
   res.type('txt').send('hello ' + name);
